@@ -1,96 +1,71 @@
 import docker
 
+# Create a Docker client
 client = docker.from_env()
 
-# Check if Docker is running in swarm mode
-info = client.info()
-swarm_mode = info['Swarm']['LocalNodeState'] == 'active'
+# List all running containers excluding those part of a stack or service
+containers = [container for container in client.containers.list() if 'com.docker.stack.namespace' not in container.labels]
 
-if swarm_mode:
-    # List all services
-    services = client.services.list()
-    print("Services:")
-    for service in services:
-        print(service.name)
-else:
-    # List all containers
-    containers = client.containers.list(all=True)
-    print("Containers:")
-    for container in containers:
-        print(container.name)
+# Print container information
+print("Available Containers:")
+for i, container in enumerate(containers, start=1):
+    print(f"{i}. {container.name}")
 
-# Get user selection
-selection = input("Enter the name of the container or service you want to inspect: ")
+# Ask the user to select a container
+container_number = int(input("Select a container (enter the corresponding number): "))
 
-if swarm_mode:
-    # Find the selected service
-    selected_service = None
-    for service in services:
-        if service.name == selection:
-            selected_service = service
-            break
+# Validate user input
+if 1 <= container_number <= len(containers):
+    selected_container = containers[container_number - 1]
 
-    if selected_service:
-        # Get service details
-        service_info = selected_service.attrs
-        envs = service_info['Spec']['TaskTemplate']['ContainerSpec']['Env']
-        ports = service_info['Endpoint']['Ports']
-        mounts = service_info['Spec']['TaskTemplate']['ContainerSpec']['Mounts']
+    # Print detailed information about the selected container
+    print("\nDetails for Selected Container:")
+    print(f"Container Name: {selected_container.name}")
+    print(f"Container ID: {selected_container.id}")
+    print(f"Image: {selected_container.image.tags[0] if selected_container.image.tags else 'None'}")
 
-        # Reconstruct docker-compose.yml
-        compose = f"""
-version: '3.8'
-services:
-  {selected_service.name}:
-    image: {service_info['Spec']['TaskTemplate']['ContainerSpec']['Image']}
-"""
-        if envs:
-            compose += "    environment:\n"
-            for env in envs:
-                if not env.startswith('PATH='):
-                    compose += f"      - {env}\n"
-        if ports:
-            compose += "    ports:\n"
-            for port in ports:
-                compose += f"      - \"{port['TargetPort']}:{port['PublishedPort']}\"\n"
-        if mounts:
-            compose += "    volumes:\n"
-            for mount in mounts:
-                if mount['Type'] == 'bind':
-                    compose += f"      - {mount['Source']}:{mount['Target']}\n"
-
-        print(f"docker-compose.yml to start {selected_service.name}:")
-        print(compose)
-    else:
-        print(f"No service found with name: {selection}")
-else:
-    # Find the selected container
-    selected_container = None
-    for container in containers:
-        if container.name == selection:
-            selected_container = container
-            break
-
-    if selected_container:
-        # Get container details
-        container_info = selected_container.attrs
-        envs = container_info['Config']['Env']
-        ports = container_info['HostConfig']['PortBindings']
-        volumes = container_info['Mounts']
-
-        # Reconstruct command
-        command = f"docker run --name {selected_container.name}"
-        for env in envs:
-            if not env.startswith('PATH='):
-                command += f" -e {env}"
-        for port in ports:
-            command += f" -p {ports[port][0]['HostPort']}:{port}"
+    # Print user-defined volumes
+    volumes = selected_container.attrs['Mounts']
+    if volumes:
+        print("User-Defined Volumes:")
         for volume in volumes:
-            if volume['Type'] == 'bind':
-                command += f" -v {volume['Source']}:{volume['Destination']}"
-        command += f" {container_info['Config']['Image']}"
+            print(f"  Container Path: {volume['Destination']}, Host Path: {volume['Source']}")
 
-        print(f"Command to start {selected_container.name}:")
-        print(command)
-    else:
-        print(f"No container found with name: {selection}")
+    # Print user-defined environment variables
+    environment_variables = selected_container.attrs['Config']['Env']
+    if environment_variables:
+        print("User-Defined Environment Variables:")
+        for env_var in environment_variables:
+            print(f"  {env_var}")
+
+    # Print reconstructed docker run command
+    docker_run_command = f"docker run -d"
+
+    # Add container name
+    docker_run_command += f" --name {selected_container.name}"
+
+    # Add port mapping
+    ports = selected_container.attrs['NetworkSettings']['Ports']
+    if ports:
+        for container_port, host_ports in ports.items():
+            host_port = host_ports[0]['HostPort']
+            docker_run_command += f" -p {host_port}:{container_port}"
+
+    # Add user-defined volumes
+    if volumes:
+        for volume in volumes:
+            docker_run_command += f" -v {volume['Source']}:{volume['Destination']}"
+
+    # Add user-defined environment variables
+    if environment_variables:
+        for env_var in environment_variables:
+            docker_run_command += f" -e {env_var}"
+
+    # Add image
+    docker_run_command += f" {selected_container.image.tags[0] if selected_container.image.tags else 'None'}"
+
+    print("\nReconstructed docker run command:")
+    print(docker_run_command)
+
+else:
+    print("Invalid selection. Please enter a valid container number.")
